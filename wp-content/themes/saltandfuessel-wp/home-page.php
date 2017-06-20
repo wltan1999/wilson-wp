@@ -18,16 +18,16 @@ get_header(); ?>
         <div class="item active">
           <img src="https://placehold.it/800x400?text=IMAGE" alt="Image">
           <div class="carousel-caption">
-            <h3>Sell $</h3>
-            <p>Money Money.</p>
+            <h3>Slider 1 Heading</h3>
+            <p>Slider 1 Text</p>
           </div>      
         </div>
 
         <div class="item">
           <img src="https://placehold.it/800x400?text=Another Image Maybe" alt="Image">
           <div class="carousel-caption">
-            <h3>More Sell $</h3>
-            <p>Lorem ipsum...</p>
+            <h3>Slider 2 Heading</h3>
+            <p>Slider 2 Text</p>
           </div>      
         </div>
       </div>
@@ -44,22 +44,20 @@ get_header(); ?>
     </div>
   </div>
   <div class="col-sm-4">
-    <div class="well">
-      <p>Some text..</p>
+    <div>
+      <h1><?php echo get_field('hero_title'); ?></h1>
     </div>
-    <div class="well">
-       <p>Upcoming Events..</p>
+    <div>
+       <h2><?php echo get_field('hero_sub_title'); ?></h2>
     </div>
-    <div class="well">
-       <p>Visit Our Blog</p>
-    </div>
+    <?php echo apply_filters('the_content',get_field('hero_text')); ?>
   </div>
 </div>
 <hr>
 </div>
 
 <div class="container text-center">    
-  <h3>What We Do</h3>
+  <h3><?php echo get_field('what_we_do_title'); ?></h3>
   <br>
   <div class="row">
     <div class="col-sm-3">
