@@ -19,7 +19,7 @@ class wfUtils {
 		if (function_exists('date_diff')) {
 			$now = new DateTime();
 			$utc = new DateTimeZone('UTC');
-			$dtStr = gmdate("c", $now->getTimestamp() + $secs); //Have to do it this way because of PHP 5.2
+			$dtStr = gmdate("c", (int) ($now->getTimestamp() + $secs)); //Have to do it this way because of PHP 5.2
 			$then = new DateTime($dtStr, $utc);
 			
 			$diff = $then->diff($now);
@@ -101,6 +101,10 @@ class wfUtils {
 		}
 		if ($secs) {
 			$components[] = self::pluralize($secs, 'second');
+		}
+		
+		if (empty($components)) {
+			$components[] = 'less than 1 second';
 		}
 		
 		return implode(' ', $components);
@@ -793,7 +797,7 @@ class wfUtils {
 			return null;
 		}
 		$prefix = 'http';
-		if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']) {
+		if (is_ssl()) {
 			$prefix = 'https';
 		}
 		return $prefix . '://' . $host . $_SERVER['REQUEST_URI'];
@@ -1502,7 +1506,7 @@ class wfUtils {
 	 * @param bool $inline
 	 * @return string
 	 */
-	public static function potentialBinaryStringToHTML($string, $inline = false) {
+	public static function potentialBinaryStringToHTML($string, $inline = false, $allowmb4 = false) {
 		$output = '';
 		
 		if (!defined('ENT_SUBSTITUTE')) {
@@ -1521,7 +1525,7 @@ class wfUtils {
 				$output .= $span . '\x' . str_pad(dechex($b), 2, '0', STR_PAD_LEFT) . '</span>';
 			}
 			else if ($b < 0x80) {
-				$output .= htmlspecialchars($c, ENT_QUOTES, 'UTF-8');
+				$output .= htmlspecialchars($c, ENT_QUOTES, 'ISO-8859-1');
 			}
 			else { //Assume multi-byte UTF-8
 				$bytes = 0;
@@ -1545,6 +1549,37 @@ class wfUtils {
 					}
 				}
 				
+				if (!$brokenUTF8) { //Ensure the byte sequences are within the accepted ranges: https://tools.ietf.org/html/rfc3629
+					/*
+					 * UTF8-octets = *( UTF8-char )
+   					 * UTF8-char   = UTF8-1 / UTF8-2 / UTF8-3 / UTF8-4
+   					 * UTF8-1      = %x00-7F
+   					 * UTF8-2      = %xC2-DF UTF8-tail
+   					 * UTF8-3      = %xE0 %xA0-BF UTF8-tail / %xE1-EC 2( UTF8-tail ) /
+   					 *               %xED %x80-9F UTF8-tail / %xEE-EF 2( UTF8-tail )
+   					 * UTF8-4      = %xF0 %x90-BF 2( UTF8-tail ) / %xF1-F3 3( UTF8-tail ) /
+   					 *               %xF4 %x80-8F 2( UTF8-tail )
+   					 * UTF8-tail   = %x80-BF
+					 */
+					
+					$testString = wfUtils::substr($string, $i, $bytes);
+					$regex = '/^(?:' .
+						'[\xc2-\xdf][\x80-\xbf]' . //UTF8-2
+						'|' . '\xe0[\xa0-\xbf][\x80-\xbf]' . //UTF8-3
+						'|' . '[\xe1-\xec][\x80-\xbf]{2}' .
+						'|' . '\xed[\x80-\x9f][\x80-\xbf]' .
+						'|' . '[\xee-\xef][\x80-\xbf]{2}';
+					if ($allowmb4) {
+						$regex .= '|' . '\xf0[\x90-\xbf][\x80-\xbf]{2}' . //UTF8-4
+							'|' . '[\xf1-\xf3][\x80-\xbf]{3}' .
+							'|' . '\xf4[\x80-\x8f][\x80-\xbf]{2}';
+					}
+					$regex  .= ')$/';
+					if (!preg_match($regex, $testString)) {
+						$brokenUTF8 = true;
+					}
+				}
+				
 				if ($brokenUTF8) {
 					$bytes = min($bytes, strlen($string) - $i);
 					for ($n = 0; $n < $bytes; $n++) {
@@ -1555,7 +1590,7 @@ class wfUtils {
 					$i += ($bytes - 1);
 				}
 				else {
-					$output .= htmlspecialchars(substr($string, $i, $bytes), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+					$output .= htmlspecialchars(wfUtils::substr($string, $i, $bytes), ENT_QUOTES | ENT_SUBSTITUTE, 'ISO-8859-1');
 					$i += ($bytes - 1);
 				}
 			}
@@ -2011,29 +2046,48 @@ class wfUtils {
 	 *
 	 * @return int
 	 */
-	public static function normalizedTime() {
+	public static function normalizedTime($base = false) {
+		if ($base === false) {
+			$base = time();
+		}
+		
 		$offset = wfConfig::get('timeoffset_ntp', false);
 		if ($offset === false) {
 			$offset = wfConfig::get('timeoffset_wf', false);
 			if ($offset === false) { $offset = 0; }
 		}
-		return time() + $offset;
+		return $base + $offset;
+	}
+	
+	/**
+	 * Returns what we consider a true timestamp, adjusted as needed to match the local server's drift. We use this
+	 * because a significant number of servers are using a drastically incorrect time.
+	 *
+	 * @return int
+	 */
+	public static function denormalizedTime($base) {
+		$offset = wfConfig::get('timeoffset_ntp', false);
+		if ($offset === false) {
+			$offset = wfConfig::get('timeoffset_wf', false);
+			if ($offset === false) { $offset = 0; }
+		}
+		return $base - $offset;
 	}
 	
 	/**
 	 * Formats and returns the given timestamp using the time zone set for the WordPress installation.
 	 * 
 	 * @param string $format See the PHP docs on DateTime for the format options. 
-	 * @param int|null $timestamp Assumed to be in UTC. If null, defaults to the current timestamp.
+	 * @param int|bool $timestamp Assumed to be in UTC. If false, defaults to the current timestamp.
 	 * @return string
 	 */
-	public static function formatLocalTime($format, $timestamp = null) {
-		if ($timestamp === null) {
+	public static function formatLocalTime($format, $timestamp = false) {
+		if ($timestamp === false) {
 			$timestamp = time();
 		}
 		
 		$utc = new DateTimeZone('UTC');
-		$dtStr = gmdate("c", $timestamp); //Have to do it this way because of PHP 5.2
+		$dtStr = gmdate("c", (int) $timestamp); //Have to do it this way because of PHP 5.2
 		$dt = new DateTime($dtStr, $utc);
 		$tz = get_option('timezone_string');
 		if (!empty($tz)) {
@@ -2042,7 +2096,17 @@ class wfUtils {
 		else {
 			$gmt = get_option('gmt_offset');
 			if (!empty($gmt)) {
-				$dt->setTimezone(new DateTimeZone('Etc/GMT' . ($gmt < 0 ? '+' : '-') . abs($gmt))); //The Etc/GMT timezones have the +- signs flipped
+				if (PHP_VERSION_ID < 50510) {
+					$dtStr = gmdate("c", (int) ($timestamp + $gmt * 3600)); //Have to do it this way because of < PHP 5.5.10
+					$dt = new DateTime($dtStr, $utc);
+				}
+				else {
+					$direction = ($gmt > 0 ? '+' : '-');
+					$gmt = abs($gmt);
+					$h = (int) $gmt;
+					$m = ($gmt - $h) * 60;
+					$dt->setTimezone(new DateTimeZone($direction . str_pad($h, 2, '0', STR_PAD_LEFT) . str_pad($m, 2, '0', STR_PAD_LEFT)));
+				}
 			}
 		}
 		return $dt->format($format);
@@ -2078,11 +2142,12 @@ class wfWebServerInfo {
 	 */
 	public static function createFromEnvironment() {
 		$serverInfo = new self;
+		$sapi = php_sapi_name();
 		if (stripos($_SERVER['SERVER_SOFTWARE'], 'apache') !== false) {
 			$serverInfo->setSoftware(self::APACHE);
 			$serverInfo->setSoftwareName('apache');
 		}
-		if (stripos($_SERVER['SERVER_SOFTWARE'], 'litespeed') !== false) {
+		if (stripos($_SERVER['SERVER_SOFTWARE'], 'litespeed') !== false || $sapi == 'litespeed') {
 			$serverInfo->setSoftware(self::LITESPEED);
 			$serverInfo->setSoftwareName('litespeed');
 		}
@@ -2095,7 +2160,7 @@ class wfWebServerInfo {
 			$serverInfo->setSoftwareName('iis');
 		}
 
-		$serverInfo->setHandler(php_sapi_name());
+		$serverInfo->setHandler($sapi);
 
 		return $serverInfo;
 	}
